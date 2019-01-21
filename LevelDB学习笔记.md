@@ -1,15 +1,13 @@
 
 # LevelDB阅读笔记
 
-最近花了点时间学习了一下LevelDB，这里是一些学习心得，打算记录下来，并打算慢慢完善。因为LevelDB中有许多实现的细节非常巧妙，比如用到的Lock-free programming，多线程的处理，LevelDB编码方式，batchWrite用到的生产者消费者模型等，因为我C++基本功并不扎实，所以有的实现细节要慢慢领悟，理解后我会再写在这里。
-
 ## LevelDB的背景
 
-LevelDB是Google出品的一个单机版KV存储引擎，Google大名鼎鼎的Big Table就是构建于LevelDB之上的。LevelDB是一个适用于写多读少的数据库，里面最核心的思想就是LSM，LSM更多是一种思想而不是一种算法，LevelDB通过LSM的实现方式，减少随机写的次数，提高了写入的效率，并且通过Compaction这种内部的数据整合机制，达到了平衡读写速率的效果。在[这里](http://www.lmdb.tech/bench/microbench/benchmark.html)可以看到在每个KV都不是非常大（100,000 bytes each）的时候,LevelDB都有不俗的表现。
+LevelDB是Google出品的一个单机版Key-Value存储引擎，LevelDB的想法是来自于Google大名鼎鼎的Big Table，因为Big Table是通过Google很多内部的代码实现的，这些代码并没有开源，所以两位作者 Jeffrey Dean和Sanjay Ghemawat做了一个更适合开源的版本，也就是我们现在看到的LevelDB。LevelDB是一个适用于写多读少的数据库，里面最核心的思想就是LSM(log-structured merge-tree)，LSM更多是一种思想，LevelDB通过LSM的实现方式，减少随机写的次数，提高了写入的效率，并且通过Compaction这种内部的数据整合机制，达到了平衡读写速率的效果。在[这里](http://www.lmdb.tech/bench/microbench/benchmark.html)可以看到在每个KV都不是非常大（100,000 bytes each）的时候，LevelDB都有不俗的表现。
 
 ## LevelDB总体架构
 
-其实数据库无外乎就是要解决两个问题，**怎么存储数据**，**怎么读取数据**。为了解决上面的两个核心问题，就需要数据库这样一个调度系统，而内存和硬盘就是被调度的对象，解决好了内存和硬盘之间的互动关系，自然也就能理解数据库是怎么读写数据了。我们可以先看一下LevelDB的概括图：
+其实数据库无外乎就是要解决两个问题：**怎么存储数据**，**怎么读取数据**。为了解决上面的两个核心问题，就需要数据库这样一个调度系统，而内存和硬盘就是被调度的对象，解决好了内存和硬盘之间的互动关系，自然也就能理解数据库是怎么读写数据了。我们可以先看一下LevelDB的写入概括图：
 
 ![LevelDB概括图](img.jpg)
 
@@ -21,7 +19,7 @@ LevelDB是Google出品的一个单机版KV存储引擎，Google大名鼎鼎的Bi
 
 ## Memtable
 
-在LevelDB的里面，Memtable是完全存在于内存里面的，其核心就是一个**跳表(skiplist)**，所有的KV都是根据Key排好序的，所以在设计Memtable的时候，要使用一种数据结构，方便于插入，并且这种插入操作的复杂度不能过高。其实这种数据结构有很多，比如AVL树，BST等，这些数据结构的插入复杂度都是O(logN)，但树状数据结构都会有个问题，就是数据如果按照某种特定的顺序插入的话，可能在某一个时间点进行树高的调整，也就是让我们的树更加balance，而往往这一个开销是比较大的。所以LevelDB采用了另一种更简单的数据结构，跳表。跳表是一种随机化的数据结构，通过随机化，插入复杂度是amortized O(logN)。
+在LevelDB的里面，Memtable是完全存在于内存里面的，其核心就是一个**跳表(skiplist)**，所有的KV都是根据Key排好序的，所以在设计Memtable的时候，要使用一种数据结构，方便于插入，并且这种插入操作的复杂度不能过高。其实这种数据结构有很多，比如AVL(Adelson-Velskii and Landis)树，BST等，这些数据结构的插入复杂度都是O(logN)，但树状数据结构都会有个问题，就是数据如果按照某种特定的顺序插入的话，可能在某一个时间点进行树高的调整，也就是让我们的树更加balance，而往往这一个开销是比较大的。所以LevelDB采用了另一种数据结构，跳表。跳表是一种随机化的数据结构，通过随机化，插入复杂度是amortized O(logN)。
 
 ![skiplist](skiplist.jpg)
 
@@ -255,7 +253,7 @@ SSTable中一共存在这几种不同类型的数据，Data Block, Filter Block,
 
 ### Data Block
 
-首先在LevelDB里面一个Block的大小定义为4k，在讲Data Block的结构之前，我们要先了解一个简单的压缩存储方法。
+首先在LevelDB里面一个Block的大小定义为4k，在讲Data Block的结构之前，我们要先了解一个简单的压缩存储方法，在下文中，Entry表示的是每个KV在Data Block中的一条记录。
 
 假设我们现在一共有4个KV记录，分别是：
 
@@ -272,9 +270,9 @@ SSTable中一共存在这几种不同类型的数据，Data Block, Filter Block,
 
 ![Entry_Example](entry_example.jpg)
 
-从上图中我们可以看到所有的数据其实是存在一个很长的String里面的，这个也是非常中规中矩的数据库存储数据的方式，一个char是一个byte，拿string来存储Key的值以及Value的值很合理，但是我们不要忽略我们也记录下了长度，长度是一个整型数据，LevelDB里面用了一种自己的编码方式，这个后面再说，这种特殊的编码方式可以将整型数据尽可能小的存储成string的形式，只要长度这个整型数据小于128就可以当成是一个byte。
+从上图中我们可以看到所有的数据其实是存在一个很长的string里面的，这个也是非常中规中矩的数据库存储数据的方式，拿string来存储Key的值以及Value的值很合理，但是我们不要忽略我们也记录下了长度，长度是一个整型数据，LevelDB里面用了一种自己的编码方式，这个后面再说，这种特殊的编码方式可以将整型数据尽可能小的存储成string的形式，只要长度这个整型数据小于128就可以当成是一个byte。
 
-当我们有了这个很长的string以后，我们还要记录下每个重新存储完整key的点的偏移量，以便后面读取的时候可以提高查找速度，这个正是我们上面提到的Restart point。还是以我们上图为例子，我们一共有两个Restart point，分别是第一个Entry以及第四个Entry，所以Restart point这个数组记录下来的便是0（第一个Entry在string这个数组的偏移量）以及34（第四个Entry在string这个数组的偏移量）。
+当我们有了这个很长的string以后，我们还要记录下每个重新存储完整key的点的偏移量，以便后面读取的时候可以提高查找速度，这个正是我们上面提到的Restart point。还是以我们上图为例子，我们一共有两个Restart point，分别是第一个Entry以及第四个Entry，所以Restart point这个数组记录下来的便是0（第一个Entry在string这个数组的偏移量）以及33（第四个Entry在string这个数组的偏移量）。
 
 核心代码：
 
@@ -338,11 +336,11 @@ Slice BlockBuilder::Finish() {
 
 ### Filter Block 以及 Meta Index Block
 
-这一块暂时不提及，以后我会在这里补上，这里涉及到bloom filter的数据结构。
+这一块暂时不提及，这里涉及到bloom filter的数据结构。
 
 ### Index Block
 
-正如我们上面看到的data block的组成结构，都是有序的数据块，其实很自然的可以想到了二分搜索，index block正是这个想法，在读去的时候，index block可以更方便的用二分搜索来查找。
+正如我们上面看到的data block的组成结构，都是有序的数据块，其实很自然的可以想到了二分搜索，index block正是这个想法，在读取的时候，index block可以更方便的用二分搜索来查找。
 Index block的结构其实很简单，主要就是要记录下上一个data block最后一个key和下一个data block第一个key的分割值（我们称这个值为Max Key），以及上一个data block的偏移量以及大小（这些信息是存储在一个叫做```BlockHandle```里面的）。我们可以直接看看index block的结构：
 
 ![index_block](index_block.jpg)
@@ -351,7 +349,7 @@ Index block的结构其实很简单，主要就是要记录下上一个data bloc
 
 上个data block最后一个key的值：helloleveldb
 
-下个data block第一个key的值：hellooceandb
+下个data block第一个key的值：helloocean
 
 那么Max Key则是hellom。Max Key要确保比上个data block所有的key都要大，比下个data block所有的key都要小。
 
@@ -631,9 +629,9 @@ class Footer {
 
 ## LSM以及Compaction
 
-LSM这个是整个LevelDB的核心问题了，LSM这个是一个思想，并不能说是一个具体的算法，而Compaction是一个LevelDB调整内部数据存储结构的过程，是为了达到读写均衡的目的。在网上看了很多关于LSM别人写的blog，我一直没有找到解释的非常透彻的文章，最原生态的paper可以在[这里](https://www.cs.umb.edu/~poneil/lsmtree.pdf)找到，但是这是一篇非常academic的paper，可能我比较水，阅读起来难度不小。我个人猜测为什么大部分的blog并没有讲的很透测的原因是他们并没有深入到硬件结构上面，基本上在讲LSM的时候都是一笔带过，然后大部分的篇幅在讲Compaction的过程，可是我们学习一个思想，很重要的是要思考为什么，为什么LSM是一个适用于写多读少的场景，这个对我们以后的成长才有帮助。
+LSM这个是整个LevelDB的核心问题了，LSM这个是一个思想，并不能说是一个具体的算法，而Compaction是一个LevelDB调整内部数据存储结构的过程，是为了达到读写均衡的目的。在网上看了很多关于LSM别人写的blog，我一直没有找到解释的非常透彻的文章，最原生态的paper可以在[这里](https://www.cs.umb.edu/~poneil/lsmtree.pdf)找到，但是这是一篇非常academic的paper，阅读起来难度不小。我个人猜测为什么大部分的blog并没有讲的很透测的原因是他们并没有深入到硬件结构上面，基本上在讲LSM的时候都是一笔带过，然后大部分的篇幅在讲Compaction的过程，可是我们学习一个思想，很重要的是要思考为什么，为什么LSM是一个适用于写多读少的场景，这个对我们以后的成长才有帮助。
 
-这里扯一点题外话，自己在辞职后，慢慢离开了Application Developer的范畴，并且开始反复会问问自己这些个工具是怎么做出来的，为什么要这样做，如果我自己来设计，我会怎么设计，才慢慢体会到了一些“大工匠”的能力，在我看来，一个“大工匠”应该是对整个计算机的底层到高层都非常熟悉的人，正如LevelDB的作者，Jeff Dean和Sanjay，为了查一个bug，可以从上层的Application一直查到0和1的级别。我曾经听到过一个非常好的比喻，虽然这个比喻是用来形容[disruptor](https://github.com/LMAX-Exchange/disruptor)的作者的，但我觉得很恰当。这个比喻是这么说的，设计这个工具的人（指disruptor的作者），就好比一个经验非常丰富的F1赛车手。往往经验丰富的赛车手在坐上车子后，只要通过听发动机的声音，以及在驾驶的时候感受到和往常一些微妙的差别，便可以很清楚的告诉身边的人车子的毛病出在哪一个地方。这样的人在我心里这就是“大工匠”吧！
+这里扯一点题外话，自己在辞职后，开始反复会问问自己这些个工具是怎么做出来的，为什么要这样做，如果我自己来设计，我会怎么设计，才慢慢体会到了一些“大工匠”的能力，在我看来，一个“大工匠”应该是对整个计算机的底层到高层都非常熟悉的人，正如LevelDB的作者，Jeff Dean和Sanjay Ghemawat，为了查第一代谷歌的核心系统的bug，可以从上层的Application一直查到0和1的级别。我曾经听到过一个非常好的比喻，虽然这个比喻是用来形容[disruptor](https://github.com/LMAX-Exchange/disruptor)的作者的，但我觉得很恰当。这个比喻是这么说的，设计这个工具的人（指disruptor的作者），就好比一个经验非常丰富的F1赛车手。往往经验丰富的赛车手在坐上车子后，只要通过听发动机的声音，以及在驾驶的时候感受到和往常一些微妙的差别，便可以很清楚的告诉身边的人车子的毛病出在哪一个地方。这样的人在我心里这就是“大工匠”吧！
 
 ![炉石传说里面的大工匠](大工匠.gif)
 
@@ -641,7 +639,7 @@ LSM这个是整个LevelDB的核心问题了，LSM这个是一个思想，并不�
 
 ### 硬盘构造
 
-我们来看看传统的磁盘的构造，传统的磁盘是由**盘片(platters)** 组成的，每个盘片上面会有磁性记录材料，而这些盘片的中央有一个旋转的**主轴**，这个主轴可以使得盘片以5400 ~ 15000转每分钟的速度旋转。每个盘片的表面会有一个个**磁道(track)**，而每个磁道被划分为一个个**扇区(sector)**，一般一个扇区是512byte，也就是8个连续的扇区组成一个**文件系统块(block)，文件系统块就是文件系统中最小存储单元的抽象**，而每个盘面上面都会有一个悬空的 **磁头(head)**，磁头在不同的磁道上面的机械过程，我们称之为**寻道(seek)**。
+我们来看看传统的磁盘的构造，传统的磁盘是由**盘片(platters)** 组成的，每个盘片上面会有磁性记录材料，而这些盘片的中央有一个旋转的**主轴**，这个主轴可以使得盘片以每分钟5400 ~ 15000转的速度旋转。每个盘片的表面会有一个个**磁道(track)**，而每个磁道被划分为一个个**扇区(sector)**，一般一个扇区是512byte，也就是8个连续的扇区组成一个**文件系统块(block)，文件系统块就是文件系统中最小存储单元的抽象**，而每个盘面上面都会有一个悬空的 **磁头(head)**，磁头在不同的磁道上面的机械过程，我们称之为**寻道(seek)**。
 
 ![https://commons.wikimedia.org/wiki/File:Cylinder_Head_Sector.svg](disk.svg)
 
@@ -651,16 +649,16 @@ LSM这个是整个LevelDB的核心问题了，LSM这个是一个思想，并不�
 
 1. 磁头需要移动到对应的磁道(seek time)
 2. 通过磁盘的旋转，磁头需要在磁道上找到对应的扇区(spinning time)
-3. 将数据写入到扇区固有的时间(transfer time)
+3. 将数据写入到扇区所需要的传输时间(transfer time)
 
 在上述三个时间中，spinning time是非常小的，因为盘片的旋转速度非常快，而transfer time是固有的时间，也就是写入那么多数据，transfer time就会必须花费那么多的时间。所以最费时间的就是seek time了，seek time的开销，是所有数据库都在一直试图缩短的时间。在顺序写入的过程中，我们的磁头只需要一次的seek time以及spinning time在加上固有的transfer time我们便可以将数据写入。而随机写的过程中，每一次的写操作，都需要一次seek time + spinning time + transfer time，大部分的时间全部浪费在了seek time上面。
 
-那么传统的数据库（比如Mysql的存储引擎InnoDB）都是以B+树的形式来维持index的，每次写入一个数据的时候，我们最起码要做这几个事情：
+那么传统的数据库（比如MySQL的存储引擎InnoDB）多是以B+树的形式来维护index的，每次写入一个数据的时候，我们最起码要做这几个事情：
 
 1. Update我们的index，也就是update我们的B+树的叶子节点，如果B+树比较大，叶子节点是存在于磁盘上面的话，这里我们必须要做一次随机写的IO。
 2. 通过找到的block的所在地，将新加入的数据写入磁盘，这里也必须做一次随机写的IO，这里又会耗费一定的时间。
 
-那么这里就暴露了传统数据库的一个弊端，通过上面的描述，当我们不停写入数据的时候，我们反复在做上面两个步骤。举个例子，比如我们先插入一个数据A，我们通过上面两个步骤，找到了A所应该在的位置，A所在的位置应该是5号磁道中的25号扇区，然后我们将A写入磁盘，但是我们下个要写入的数据B，通过上面两个步骤，找到了B所在的位置是100号磁道48号扇区，那么磁头必须移动到该位置才能写入新的数据。在不停寻找block的过程中，时间大量花费在了seek time上面，这个正是所谓的随机写所带来的问题。
+那么这里就暴露了B+树索引的一个弊端，通过上面的描述，当我们不停写入数据的时候，我们反复在做上面两个步骤。举个例子，比如我们先插入一个数据A，我们通过上面两个步骤，找到了A所应该在的位置，A所在的位置应该是5号磁道中的25号扇区，然后我们将A写入磁盘，但是我们下个要写入的数据B，通过上面两个步骤，找到了B所在的位置是100号磁道48号扇区，那么磁头必须移动到该位置才能写入新的数据。在不停寻找block的过程中，时间大量花费在了seek time上面，这个正是所谓的随机写所带来的问题。
 
 ### LSM
 
@@ -674,7 +672,7 @@ LSM这个是整个LevelDB的核心问题了，LSM这个是一个思想，并不�
 
 3. Immutable Table会慢慢的写入第0层的SSTable，至此，这个数据变成了持久化的存储了。
 
-4. Compaction这个机制会不断调整各个Level之间的Table，尽量使得每个SSTable不会有过多的Miss Read，随着Compaction的不断调整，低Level的一些table会慢慢合并到高Level的table里面。
+4. Compaction这个机制会不断调整各个Level之间的Table，尽量使得每个SSTable不会有过多的Missed Read，随着Compaction的不断调整，低Level的一些table会慢慢合并到高Level的table里面。
 
 其中第三步和第四部分别叫做Minor Compaction以及Major Compaction，等介绍到Compaction的时候我们再细说。
 
@@ -1039,11 +1037,11 @@ Imutable Table虽然可以一开始就放到Level1，但是要确保的是和Lev
 
 触发Major Compaction有以下三个条件：
 
-1. 第0层的文件超过了上限（第0层不能太多，上面提到过上限是4个）
-2. 当第i层的文件总的大小超过(10 ^ i) MB
-3. 当某个文件miss read的次数过多
+1. 第0层的文件超过了上限（4个）
+2. 当第i层的文件总的大小超过(10 ^ i) MB（i表示的是层数）
+3. 当某个文件Missed Read的次数过多
 
-Major Compaction的优先级也是跟着这个来的。条件1保证的是确保Memtable有足够的空间给予我们新插入的数据，当第0层文件过多，而我们又要做Compaction的时候，第0层一定是优先级最高的，因为我们必须腾出空间给我们新的数据去写入内存。条件2是为了不让某一层的文件的总的大小过大，LevelDB中除了最后一层，其余层数的所有文件大小是有要求的，```score = static_cast<double>(level_bytes) / MaxBytesForLevel(options_, level);```当这个得分过高的时候，证明了该层需要做Compaction，但是为什么当某一层的文件总大小超过一定数量就需要Compaction呢，这个问题是这样解释的，因为SSTable是写在硬盘上的，也就是每次读取，最多只会访问一个SSTable，那么这个消耗是固定的，那么我们怎样才能更快，答案就是降低Compaction的开销，如果某一层的文件过大了，Compaction的开销自然会大，所以尽量要均摊我们每一层的文件大小。关于第三个条件，作者Jeff Dean是这么认为的，一次IO寻道时间(seek time)为10ms，读写1MB为10ms(transfer time)，也就是(100MB/s)，那么对一个1MB文件做Compaction的时间为，读这个1MB文件的时间+下一层读12MB（最坏情况）+写入下层12MB（最坏情况）的总时间，也就是25MB数据的IO，也就是250ms，也就是相当于25次寻道时间，就可以做一次1MB数据的Compaction了，也就是1次的寻道时间大约等于40kb数据的Compaction时间，但Jeff dean觉得我们应该保守点的认为一次寻道时间大概约等于16kb的数据，所以也就是当一个文件最大允许miss read的次数为```f->allowed_seeks = (f->file_size / 16384);```.
+Major Compaction的优先级也是跟着这个来的。条件1保证的是确保Memtable有足够的空间给予我们新插入的数据，当第0层文件过多，而我们又要做Compaction的时候，第0层一定是优先级最高的，因为我们必须腾出空间给我们新的数据去写入内存。条件2是为了不让某一层的文件的总的大小过大，LevelDB中除了最后一层，其余层数的所有文件大小是有要求的，```score = static_cast<double>(level_bytes) / MaxBytesForLevel(options_, level);```当这个得分过高的时候，证明了该层需要做Compaction，但是为什么当某一层的文件总大小超过一定数量就需要Compaction呢，这个问题是这样解释的，因为SSTable是写在硬盘上的，也就是每次读取，最多只会访问一个SSTable，那么这个消耗是固定的，那么我们怎样才能更快，答案就是降低Compaction的开销，如果某一层的文件过大了，Compaction的开销自然会大，所以尽量要均摊我们每一层的文件大小。关于第三个条件，作者Jeff Dean是这么认为的，一次IO寻道时间(seek time)为10ms，读写1MB为10ms(transfer time)，也就是(100MB/s)，那么对一个1MB文件做Compaction的时间为，读这个1MB文件的时间+下一层读12MB（最坏情况）+写入下层12MB（最坏情况）的总时间，也就是25MB数据的IO，也就是250ms，也就是相当于25次寻道时间，就可以做一次1MB数据的Compaction了，也就是1次的寻道时间大约等于40kb数据的Compaction时间，但Jeff dean觉得我们应该保守点的认为一次寻道时间大概约等于16kb的数据，所以也就是当一个文件最大允许Missed Read的次数为```f->allowed_seeks = (f->file_size / 16384);```.
 
 ```c++
 bool Version::UpdateStats(const GetStats& stats) {
@@ -1278,7 +1276,7 @@ if (!has_current_user_key ||
     }
 ```
 
-然后会有另外的判断，但是这里牵扯到了快照(snap_shot)以及sequnce的部分，这部分我还没有读透，以后会补上来，但是值得一提的是我前面提到了LevelDB是一种Mark as Deleted的做法，前面说到写操作单元的时候，里面有个type，```kTypeDeletion```就是在这里用到的，Compaction的时候如果遇到了这个type，就不需要再将这个数据保留下来了。
+然后会有另外的判断，这里牵扯到了快照(snap_shot)以及sequence的部分，这部分我还没有读透，先不提及，但是值得一提的是我前面提到了LevelDB是一种Mark as Deleted的做法，前面说到写操作单元的时候，里面有个type，```kTypeDeletion```就是在这里用到的，Compaction的时候如果遇到了这个type，就不需要再将这个数据保留下来了。
 
 ```c++
 if (last_sequence_for_key <= compact->smallest_snapshot) {
@@ -1341,10 +1339,10 @@ if (last_sequence_for_key <= compact->smallest_snapshot) {
 
 3. 在Compaction的时候，我们会删除一些已经被删掉的旧的KV。因为LevelDB的删除机制是Mark as Deleted，每个数据都是Append进来的，所以写的速度是比较快的，但是弊端就是硬盘上会有旧的、重复的垃圾数据，而这些数据在慢慢Compaction的过程中会被删除。
 
-4. 减少整个读写系统不必要的开销，这个就是上面提到的计算，每次miss read都会造成资源的浪费，Compcation把SSTable重组，这样就可以相对减少某个SSTable的Miss read的次数，减少不必要的开销。
+4. 减少整个读写系统不必要的开销，这个就是上面提到的计算，每次Missed Read都会造成资源的浪费，Compcation把SSTable重组，这样就可以相对减少某个SSTable的Missed Read的次数，减少不必要的开销。
 
 ## 小结
 
-传统数据库的引擎采用的可能是B树这样的方式来运作的，我读书的时候拜读了一部分[数据库系统组成原理](https://www.amazon.com/Database-System-Implementation-Hector-Garcia-Molina/dp/0130402648)，所以我自己刚看LevelDB的思想的时候，觉得是一种很反常规的做法，确实花了不少时间去阅读代码，理解LSM的想法（也是因为自己比较水。。。。），和传统的方法相比，我个人觉得LevelDB更好的发挥了Memory和disk各自的优势，避免了各自的劣势（内存快，我们就尽快把数据往里面写，硬盘慢，我们就尽量顺序写，写的东西虽然不是那么的“美观”，可能有重复数据等，那就开个线程慢慢调整。），而不是像B树一样，把内存当成一个指挥官，这个指挥官会来控制写入读取，这样忽略了写盘时磁头运动所产生的大量的消耗。正如我提到的其实数据库就是一个调度系统，是玩一个怎么让内存和硬盘相互协调工作的游戏，其实我们现在用的一些分布式的大轮子(redis，HBase，Cassendra等)，在单机上面也是玩这个游戏，就好像Big Table下面的LevelDB一样。Skiplist，开链哈希，bloomfilter，LSM，版本号，Recovery等小工具，在上面的轮子里面都是普遍存在的。
+传统数据库的引擎多采用的是B+树，我读书的时候拜读了一部分[数据库系统组成原理](https://www.amazon.com/Database-System-Implementation-Hector-Garcia-Molina/dp/0130402648)，所以我自己刚看LevelDB的思想的时候，觉得LSM是一种很反常规的做法，确实花了不少时间去阅读代码，理解LSM的想法，和传统的方法相比，我个人觉得LevelDB更好的发挥了Memory和disk各自的优势，避免了各自的劣势（内存快，我们就尽快把数据往里面写，硬盘慢，我们就尽量顺序写，写的东西虽然不是那么的“美观”，可能有重复数据等，那就开个线程慢慢调整。），而不是像B树一样，把内存当成一个指挥官，这个指挥官会来控制写入读取，这样忽略了写盘时磁头运动所产生的大量的消耗。正如我提到的其实数据库就是一个调度系统，是玩一个怎么让内存和硬盘相互协调工作的游戏，其实我们现在用的一些分布式的大轮子(redis，HBase，Cassendra等)，在单机上面也是玩这个游戏，就好像Big Table下面的LevelDB一样。Skiplist，开链哈希，bloomfilter，LSM，版本号，Recovery等小工具，在上面的轮子里面都是普遍存在的。
 
-还有一些比较重要的东西没在这里提到，比如版本号，快照，Cache，log，以及怎么recovery等，因为自己还没有觉得有把握说100%都理解了，所以也不敢写出来，我会慢慢再看看剩余的部分，然后再在这里填坑。因为我水平有限，确实有一些地方还没有讲的很透彻，甚至自己也可能理解上会有偏差，如果发现了这样的地方，也欢迎大家多交流。
+还有一些比较重要的东西没在这里提到，比如用到的Lock-free programming，多线程的处理，LevelDB编码方式，版本号，快照，Cache，log，以及怎么recovery等，因为自己还没有觉得有把握说100%都理解了，所以也不敢写出来，我会慢慢再看看剩余的部分，然后再在这里填坑。确实有一些地方还没有讲的很透彻，甚至自己也可能理解上会有偏差，如果发现了这样的地方，也欢迎大家多交流。
