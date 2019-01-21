@@ -3,7 +3,7 @@
 
 ## LevelDB的背景
 
-LevelDB是Google出品的一个单机版Key-Value存储引擎，LevelDB的想法是来自于Google大名鼎鼎的Big Table，因为Big Table是通过Google很多内部的代码实现的，这些代码并没有开源，所以两位作者 Jeffrey Dean和Sanjay Ghemawat做了一个更适合开源的版本，也就是我们现在看到的LevelDB。LevelDB是一个适用于写多读少的数据库，里面最核心的思想就是LSM(log-structured merge-tree)，LSM更多是一种思想，LevelDB通过LSM的实现方式，减少随机写的次数，提高了写入的效率，并且通过Compaction这种内部的数据整合机制，达到了平衡读写速率的效果。在[这里](http://www.lmdb.tech/bench/microbench/benchmark.html)可以看到在每个KV都不是非常大（100,000 bytes each）的时候，LevelDB都有不俗的表现。
+LevelDB是Google出品的一个单机版Key-Value存储引擎，LevelDB的想法是来自于Google大名鼎鼎的Bigtable，因为Bigtable是通过Google很多内部的代码实现的，这些代码并没有开源，所以两位作者 Jeffrey Dean和Sanjay Ghemawat做了一个更适合开源的版本，也就是我们现在看到的LevelDB。LevelDB是一个适用于写多读少的数据库，里面最核心的思想就是LSM树(log-structured merge-tree)，以下简称LSM，LSM更多是一种思想，LevelDB通过LSM的实现方式，减少随机写的次数，提高了写入的效率，并且通过Compaction这种内部的数据整合机制，达到了平衡读写速率的效果。在[这里](http://www.lmdb.tech/bench/microbench/benchmark.html)可以看到在每个Value都不是非常大（100,000 bytes each）的时候，LevelDB都有不俗的表现。
 
 ## LevelDB总体架构
 
@@ -19,7 +19,7 @@ LevelDB是Google出品的一个单机版Key-Value存储引擎，LevelDB的想法
 
 ## Memtable
 
-在LevelDB的里面，Memtable是完全存在于内存里面的，其核心就是一个**跳表(skiplist)**，所有的KV都是根据Key排好序的，所以在设计Memtable的时候，要使用一种数据结构，方便于插入，并且这种插入操作的复杂度不能过高。其实这种数据结构有很多，比如AVL(Adelson-Velskii and Landis)树，BST等，这些数据结构的插入复杂度都是O(logN)，但树状数据结构都会有个问题，就是数据如果按照某种特定的顺序插入的话，可能在某一个时间点进行树高的调整，也就是让我们的树更加balance，而往往这一个开销是比较大的。所以LevelDB采用了另一种数据结构，跳表。跳表是一种随机化的数据结构，通过随机化，插入复杂度是amortized O(logN)。
+在LevelDB的里面，Memtable是完全存在于内存里面的，其核心就是一个**跳表(skiplist)**，所有的KV都是根据Key排好序的，所以在设计Memtable的时候，要使用一种数据结构，方便于插入，并且这种插入操作的复杂度不能过高。其实这种数据结构有很多，比如AVL(Adelson-Velskii and Landis)树，BST(Binary Search Tree)等，这些数据结构的插入复杂度都是O(logN)，但树状数据结构都会有个问题，就是数据如果按照某种特定的顺序插入的话，可能在某一个时间点进行树高的调整，也就是让我们的树更加balance，而往往这一个开销是比较大的。所以LevelDB采用了另一种数据结构，跳表。跳表是一种随机化的数据结构，而跳表是线性结构，所以不需要进行balance这个操作，通过随机化，插入复杂度是amortized O(logN)。
 
 ![skiplist](skiplist.jpg)
 
@@ -1343,6 +1343,6 @@ if (last_sequence_for_key <= compact->smallest_snapshot) {
 
 ## 小结
 
-传统数据库的引擎多采用的是B+树，我读书的时候拜读了一部分[数据库系统组成原理](https://www.amazon.com/Database-System-Implementation-Hector-Garcia-Molina/dp/0130402648)，所以我自己刚看LevelDB的思想的时候，觉得LSM是一种很反常规的做法，确实花了不少时间去阅读代码，理解LSM的想法，和传统的方法相比，我个人觉得LevelDB更好的发挥了Memory和disk各自的优势，避免了各自的劣势（内存快，我们就尽快把数据往里面写，硬盘慢，我们就尽量顺序写，写的东西虽然不是那么的“美观”，可能有重复数据等，那就开个线程慢慢调整。），而不是像B树一样，把内存当成一个指挥官，这个指挥官会来控制写入读取，这样忽略了写盘时磁头运动所产生的大量的消耗。正如我提到的其实数据库就是一个调度系统，是玩一个怎么让内存和硬盘相互协调工作的游戏，其实我们现在用的一些分布式的大轮子(redis，HBase，Cassendra等)，在单机上面也是玩这个游戏，就好像Big Table下面的LevelDB一样。Skiplist，开链哈希，bloomfilter，LSM，版本号，Recovery等小工具，在上面的轮子里面都是普遍存在的。
+传统数据库的引擎多采用的是B+树，我读书的时候拜读了一部分[数据库系统组成原理](https://www.amazon.com/Database-System-Implementation-Hector-Garcia-Molina/dp/0130402648)，所以我自己刚看LevelDB的思想的时候，觉得LSM是一种很反常规的做法，确实花了不少时间去阅读代码，理解LSM的想法，和传统的方法相比，我个人觉得LevelDB更好的发挥了Memory和disk各自的优势，避免了各自的劣势（内存快，我们就尽快把数据往里面写，硬盘慢，我们就尽量顺序写，写的东西虽然不是那么的“美观”，可能有重复数据等，那就开个线程慢慢调整。），而不是像B树一样，把内存当成一个指挥官，这个指挥官会来控制写入读取，这样忽略了写盘时磁头运动所产生的大量的消耗。正如我提到的其实数据库就是一个调度系统，是玩一个怎么让内存和硬盘相互协调工作的游戏，其实我们现在用的一些分布式的大轮子(redis，HBase，Cassendra等)，在单机上面也是玩这个游戏，就好像Bigtable下面的LevelDB一样。Skiplist，开链哈希，bloomfilter，LSM，版本号，Recovery等小工具，在上面的轮子里面都是普遍存在的。
 
 还有一些比较重要的东西没在这里提到，比如用到的Lock-free programming，多线程的处理，LevelDB编码方式，版本号，快照，Cache，log，以及怎么recovery等，因为自己还没有觉得有把握说100%都理解了，所以也不敢写出来，我会慢慢再看看剩余的部分，然后再在这里填坑。确实有一些地方还没有讲的很透彻，甚至自己也可能理解上会有偏差，如果发现了这样的地方，也欢迎大家多交流。
